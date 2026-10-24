@@ -27,6 +27,7 @@ DEFAULT_CFG = {
     "max_price": 24.0,
     "price_offset": 0.0,      # added to grid prices (e.g. -0.01 gives $8.99-style prices)
     "avoid_spots": [],        # spots never considered
+    "only_quality": None,     # e.g. "premium" to consider one tier only
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -242,7 +243,8 @@ class Brain:
         avoid = set(cfg.get("avoid_spots") or [])
         if avoid >= set(rules.spots):
             avoid = set()
-        combos = [(s, q) for s in rules.spots if s not in avoid for q in rules.qualities]
+        quals = [cfg["only_quality"]] if cfg.get("only_quality") in rules.qualities else rules.qualities
+        combos = [(s, q) for s in rules.spots if s not in avoid for q in quals]
         thresholds = self._threshold_prices(scen, rules, my_rep)
         for s, q in combos:
             if time.perf_counter() > deadline:
