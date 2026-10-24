@@ -4,6 +4,7 @@
 # Stop it with Ctrl+C twice.
 cd "$(dirname "$0")" || exit 1
 while true; do
+  git pull --ff-only -q 2>/dev/null || echo "git pull skipped (local changes or offline)"
   python3 bot.py "$@"
   code=$?
   echo "$(date '+%H:%M:%S') bot exited (code $code), restarting in 3s... (Ctrl+C again to stop)"
