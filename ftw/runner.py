@@ -1,0 +1,279 @@
+"""Bot main loop for live, final and practice markets.
+
+Reliability rules:
+  * one order per (mode, market, order_for_day); day numbers repeat across final markets
+  * every day's results are ingested once (Brain.processed, persisted across restarts)
+  * compute deadline derived from the server's own clock (phase_ends_at - server_time)
+  * logging and disk writes happen on a background thread, after the order is sent
+  * live/final memory and practice memory are separate files
+  * a file lock prevents two live bots fighting over the same truck
+"""
+import datetime as dt
+import fcntl
+import json
+import os
+import queue
+import sys
+import threading
+import time
+
+from .api import API, Client, NetError, ROOT
+from .rules import Rules
+from .strategy import Brain
+
+STATE_DIR = os.path.join(ROOT, "state")
+LOG_DIR = os.path.join(ROOT, "logs")
+
+
+def _parse_ts(s):
+    try:
+        return dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+class Writer(threading.Thread):
+    """Background writer: JSON-lines logs and atomic memory snapshots."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.q = queue.Queue()
+
+    def log(self, path, rec):
+        self.q.put(("log", path, rec))
+
+    def snapshot(self, path, obj):
+        self.q.put(("snap", path, obj))
+
+    def run(self):
+        while True:
+            kind, path, obj = self.q.get()
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if kind == "log":
+                    with open(path, "a") as f:
+                        f.write(json.dumps(obj, default=str) + "\n")
+                else:
+                    tmp = path + ".tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(obj, f)
+                    os.replace(tmp, path)
+            except Exception as e:  # never crash the bot over disk problems
+                print("  (write failed: %s)" % e, file=sys.stderr)
+            finally:
+                self.q.task_done()
+
+    def flush(self, timeout=5.0):
+        end = time.time() + timeout
+        while self.q.unfinished_tasks and time.time() < end:
+            time.sleep(0.02)
+
+
+def acquire_lock(name):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    f = open(os.path.join(STATE_DIR, name + ".lock"), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit("Another %s bot is already running (lock %s). Stop it first." % (name, f.name))
+    f.write(str(os.getpid()))
+    f.flush()
+    return f
+
+
+def load_memory(path):
+    try:
+        with open(path) as f:
+            m = json.load(f)
+        return m if isinstance(m, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+class Bot:
+    def __init__(self, client, base=API, memory_path=None, log_name="live", cfg=None, seed=None,
+                 dry_run=False, quiet=False):
+        self.client = client
+        self.base = base
+        self.memory_path = memory_path
+        self.dry_run = dry_run
+        self.quiet = quiet
+        mem = load_memory(memory_path) if memory_path else {}
+        seed = seed if seed is not None else int.from_bytes(os.urandom(4), "big")
+        self.brain = Brain(cfg=cfg, memory=mem, seed=seed)
+        self._restore_market(mem.get("market"))
+        self.writer = Writer()
+        self.writer.start()
+        self.log_path = os.path.join(LOG_DIR, log_name + ".jsonl")
+        self.ordered = set()
+        self.reported = set()
+        self.stats = {"orders": 0, "rejected": 0, "net_errors": 0, "decide_ms": []}
+
+    # ---- persistence of per-market progress so restarts do not double-count days
+    def _restore_market(self, m):
+        if not isinstance(m, dict) or not m.get("key"):
+            return
+        b = self.brain
+        b.market_key = tuple(m["key"])
+        b.processed = set(int(d) for d in m.get("processed", []) if isinstance(d, int))
+        b.forecasts = {int(k): v for k, v in (m.get("forecasts") or {}).items()}
+        b.last_days = {int(k): v for k, v in (m.get("last_days") or {}).items()}
+        for tid, last in (m.get("last_spots") or {}).items():
+            if tid in b.rivals:
+                b.rivals[tid].last_spot = last
+
+    def _save(self):
+        if not self.memory_path:
+            return
+        b = self.brain
+        mem = b.memory()
+        recent = sorted(b.last_days)[-2:]
+        mem["market"] = {"key": list(b.market_key) if b.market_key else None,
+                         "processed": sorted(b.processed),
+                         "forecasts": {str(k): v for k, v in b.forecasts.items() if k >= (max(b.forecasts) - 2 if b.forecasts else 0)},
+                         "last_days": {str(k): b.last_days[k] for k in recent},
+                         "last_spots": {tid: r.last_spot for tid, r in b.rivals.items() if r.last_spot}}
+        self.writer.snapshot(self.memory_path, mem)
+
+    def say(self, msg):
+        if not self.quiet:
+            print(msg, flush=True)
+
+    # ---- main loop
+    def run(self, max_markets=None, stop_when_over=False):
+        version = None
+        backoff = 1.0
+        state = None
+        while True:
+            if state is None:
+                try:
+                    status, state = self.client.state(base=self.base, since=version, timeout=35.0)
+                except NetError as e:
+                    self.stats["net_errors"] += 1
+                    self.say("network error (%s), retry in %.0fs" % (e, backoff))
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    state = None
+                    continue
+                backoff = 1.0
+                if status == 429:
+                    time.sleep(2.0)
+                    state = None
+                    continue
+                if status == 401:
+                    sys.exit("401: missing or wrong NIGHTSHIFT_KEY")
+                if status == 404:
+                    if stop_when_over:
+                        self.say("404: market not found (expired?)")
+                        return None
+                    time.sleep(5.0)
+                    state = None
+                    continue
+                if status != 200:
+                    self.say("state error %d: %s" % (status, state.get("error")))
+                    time.sleep(3.0 if status != 403 else 10.0)
+                    state = None
+                    continue
+            if not isinstance(state, dict):
+                state = None
+                continue
+            v = state.get("version")
+            version = v if isinstance(v, int) else version
+            self.brain.observe(state)
+            self._report_day(state)
+            if state.get("phase") == "over":
+                self._save()
+                self.writer.flush()
+                if stop_when_over:
+                    return state
+            nxt = self._maybe_order(state)
+            state = nxt  # practice returns the next state with the order; otherwise poll
+
+    def _maybe_order(self, state):
+        key = (state.get("mode"), state.get("market"), state.get("order_for_day"))
+        if not (state.get("phase") == "night" and state.get("orders_open") and key[2] is not None):
+            return None
+        if key in self.ordered:
+            return None
+        rules = Rules(state.get("rules"))
+        # time left in the night, by the server's clock
+        left = None
+        end, now = _parse_ts(state.get("phase_ends_at")), _parse_ts(state.get("server_time"))
+        if end and now:
+            left = end - now
+        budget = self.brain.cfg["deadline"]
+        if left is not None:
+            budget = max(0.05, min(budget, 0.3 * left))
+        t0 = time.perf_counter()
+        order = self.brain.decide(state, deadline=budget)
+        ms = (time.perf_counter() - t0) * 1000
+        self.stats["decide_ms"].append(ms)
+        if self.dry_run:
+            self.ordered.add(key)
+            self.say("  [dry-run] would order for %s: %s (%.0f ms)" % (key, order, ms))
+            self._log_decision(state, order, None, ms)
+            return None
+        send_deadline = time.perf_counter() + (max(0.3, left - 0.2 - ms / 1000) if left is not None else 10.0)
+        res, status = None, None
+        attempt = 0
+        while attempt < 4 and time.perf_counter() < send_deadline:
+            attempt += 1
+            try:
+                status, res = self.client.order(order, base=self.base,
+                                                timeout=max(0.5, min(5.0, send_deadline - time.perf_counter())))
+            except NetError as e:
+                self.stats["net_errors"] += 1
+                self.say("  order network error (%s), retrying" % e)
+                time.sleep(0.15)
+                continue
+            if status == 200:
+                break
+            if status == 400:
+                self.stats["rejected"] += 1
+                self.say("  order rejected 400: %s; sending fallback" % res.get("error"))
+                order = rules.validate(self.brain._fallback(state, rules))
+                continue
+            if status == 429:
+                time.sleep(0.5)
+                continue
+            if status == 401:
+                sys.exit("401: missing or wrong NIGHTSHIFT_KEY")
+            # 403 / 404 / 409: wrong time or market; re-read state
+            self.say("  order refused %s: %s" % (status, res.get("error") if res else ""))
+            break
+        if status == 200:
+            self.ordered.add(key)
+            self.stats["orders"] += 1
+            dbg = self.brain.last_debug
+            self.say("  ordered %s day %s: %s %s $%.2f x%d  (exp $%s, %.0f ms)" % (
+                key[0], res.get("for_day", key[2]), order["spot"], order["quality"], order["price"],
+                order["meals"], dbg.get("exp_profit"), ms))
+            self._log_decision(state, order, res, ms)
+            self._save()
+            nxt = res.get("state") if isinstance(res, dict) else None
+            return nxt if isinstance(nxt, dict) else None
+        return None
+
+    def _log_decision(self, state, order, res, ms):
+        self.writer.log(self.log_path, {
+            "t": time.time(), "mode": state.get("mode"), "market": state.get("market"),
+            "day": state.get("order_for_day"), "order": order, "ms": round(ms, 1),
+            "debug": self.brain.last_debug, "forecast": state.get("forecast"),
+            "ok": bool(res) or self.dry_run})
+
+    def _report_day(self, state):
+        ld = state.get("last_day") if isinstance(state.get("last_day"), dict) else {}
+        mine = ld.get("you") if isinstance(ld.get("you"), dict) else {}
+        k = ("report", state.get("mode"), state.get("market"), ld.get("day"))
+        if not ld.get("day") or k in self.reported:
+            return
+        self.reported.add(k)
+        you = state.get("you") or {}
+        where = "%s m%s" % (state.get("mode"), state.get("market"))
+        if mine.get("spot"):
+            self.say("[%s] day %s: %s %s $%s sold %s/%s profit $%.2f cash $%.2f" % (
+                where, ld.get("day"), mine.get("spot"), mine.get("quality"), mine.get("price"),
+                mine.get("sold"), mine.get("meals"), mine.get("profit") or 0, you.get("cash") or 0))
+        self.writer.log(self.log_path, {"t": time.time(), "mode": state.get("mode"), "market": state.get("market"),
+                                        "result_day": ld.get("day"), "you": mine, "cash": you.get("cash"),
+                                        "last_day": ld, "trucks": state.get("trucks")})
