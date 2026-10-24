@@ -45,6 +45,7 @@ DEFAULT_CFG = {
     "latenight_price": 9.25,
     "home_rep": 80.0,         # our reputation at a spot that makes it "home"
     "home_day_profit": 250.0, # typical daily profit at home, used to value crowd laws when voting
+    "home_meals": 60.0,       # typical daily meals at home, for valuing per-meal taxes
     "gameday_profit": 600.0,  # typical game-day profit at the Stadium, for valuing game-day laws
     "gameday_every": 8.0,     # roughly one game day every N days
     "riot_cost_day": 40.0,    # $/day we'd pay to remove riot risk (wrecked truck = lost days)
@@ -547,6 +548,11 @@ def choose_vote(state, cfg=None):
             if gc:  # game-day crowd law, valued at our game-day spot (the Stadium) per day
                 mult = _f(gc.get("stadium", gc.get("other", 1.0)), 1.0)
                 score += float(cfg["gameday_profit"]) / float(cfg["gameday_every"]) * (mult - 1.0)
+            pm = pr.get("per_meal") if isinstance(pr.get("per_meal"), dict) else {}
+            if pm:  # per-meal tax (+) or subsidy (-) on a quality: valued at the quality we usually sell
+                q = (((state.get("last_day") or {}).get("you") or {}).get("quality")
+                     or ((state.get("you") or {}).get("order") or {}).get("quality") or "standard")
+                score -= _f(pm.get(q), 0.0) * float(cfg.get("home_meals", 60.0))
             if "riot" in pr:  # riot 0 removes the risk; >1 makes it worse
                 score -= float(cfg["riot_cost_day"]) * (_f(pr.get("riot"), 1.0) - 1.0)
             if "flat" in pr or "revenue_share" in pr:
