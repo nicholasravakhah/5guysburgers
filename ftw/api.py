@@ -83,6 +83,17 @@ class Client:
     def vote(self, candidate, base=API, timeout=5.0):
         return self.call("POST", base + "/vote", {"candidate": candidate}, timeout=timeout)
 
+    def staff(self, staff=None, wage=None, base=API, timeout=5.0):
+        body = {}
+        if staff is not None:
+            body["staff"] = int(staff)
+        if wage is not None:
+            body["wage"] = float(wage)
+        return self.call("POST", base + "/staff", body, timeout=timeout)
+
+    def coupon(self, target, base=API, timeout=5.0):
+        return self.call("POST", base + "/coupons", {"target": target}, timeout=timeout)
+
     def practice(self, seed=None, days=30, rivals=3):
         body = {"days": days, "rivals": rivals}
         if seed is not None:
