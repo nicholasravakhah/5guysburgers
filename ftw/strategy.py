@@ -50,6 +50,10 @@ DEFAULT_CFG = {
     "riot_cost_day": 40.0,    # $/day we'd pay to remove riot risk (wrecked truck = lost days)
     "riot_guard": True,       # on a possible riot day keep away from the event spot and its neighbours
     "riot_radius": 650.0,     # metres around the Stadium treated as the riot zone (Thompson 487 m, Oval 590 m)
+    "staff_target": 3,        # crew size: 3 x 50 = 150 meals >= our biggest order (133)
+    "staff_wage": 9.0,        # rivals need >= $12 to poach (lure needs +$3); auto-raised if we lose staff
+    "coupon_rule": True,      # while coupons are live: $20 coupon on the truck we are racing each day
+    "coupon_min_lead": 0.0,   # only target a truck at least this far ahead of us in cash
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -154,6 +158,9 @@ class Brain:
         except Exception as e:  # never fail to produce an order
             order, debug = self._fallback(state, rules), {"error": repr(e)}
         order = rules.validate(order)
+        food = choose_food(state, order.get("spot"), self.my_id)
+        if food:
+            order["food"] = food
         debug["ms"] = round((time.perf_counter() - t0) * 1000, 1)
         self.last_debug = debug
         return order
@@ -498,6 +505,21 @@ def riot_zone(state, rules, radius):
     return out
 
 
+def choose_food(state, spot, my_id=None):
+    """Meat or veggie (only while the food rule is live): serve the diet whose only-eaters we can
+    win, i.e. its share divided by the rivals already serving it at that spot yesterday."""
+    if not spot or not _features(state).get("food"):
+        return None
+    diets = ((state.get("forecast") or {}).get("diets") or {}).get(spot) or {}
+    meat, veg = _f(diets.get("meat"), 0.12), _f(diets.get("veggie"), 0.07)
+    same = {"meat": 0, "veggie": 0}
+    ld = state.get("last_day") if isinstance(state.get("last_day"), dict) else {}
+    for t in (((ld.get("spots") or {}).get(spot) or {}).get("trucks") or []):
+        if isinstance(t, dict) and t.get("id") != my_id and t.get("food") in same:
+            same[t["food"]] += 1
+    return "veggie" if veg / (1 + same["veggie"]) > meat / (1 + same["meat"]) else "meat"
+
+
 def choose_vote(state, cfg=None):
     """Pick the election candidate whose laws help us most: crowd multipliers at our home spot
     (highest reputation) valued at a typical day's profit there, plus the daily fee effect."""
@@ -547,6 +569,12 @@ def _move_costs(state, rules):
         return {}
     base, per_m = 2.0, 0.01
     mc = (state.get("rules") or {}).get("move_costs")
+    if isinstance(mc, dict) and isinstance(mc.get(last), dict):  # exact table: move_costs[from][to]
+        row = mc[last]
+        exact = {s: _f(row.get(s), None) for s in rules.spots if s != last and s in row}
+        exact = {s: v for s, v in exact.items() if v is not None}
+        if exact:
+            return exact
     if isinstance(mc, dict):
         for k, v in mc.items():
             k = str(k).lower()
@@ -611,4 +639,4 @@ def _sample_idx(ws, rng):
     return len(ws) - 1
 
 
-__all__ = ["Brain", "DEFAULT_CFG", "event_key", "choose_vote", "riot_risk"]
+__all__ = ["Brain", "DEFAULT_CFG", "event_key", "choose_vote", "riot_risk", "choose_food"]
