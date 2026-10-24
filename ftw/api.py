@@ -80,6 +80,9 @@ class Client:
     def order(self, order, base=API, timeout=5.0):
         return self.call("POST", base + "/orders", order, timeout=timeout)
 
+    def vote(self, candidate, base=API, timeout=5.0):
+        return self.call("POST", base + "/vote", {"candidate": candidate}, timeout=timeout)
+
     def practice(self, seed=None, days=30, rivals=3):
         body = {"days": days, "rivals": rivals}
         if seed is not None:
