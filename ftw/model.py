@@ -55,6 +55,20 @@ _EVENT_ALIASES = [("game", "gameday"), ("midterm", "midterms"), ("concert", "con
                   ("late", "latenight"), ("rush", "latenight"), ("rally", "rally")]
 
 
+# New spots (docs "New spots and moving"): typical price limit and share wanting premium.
+# mix = [cheap ok, needs standard, needs premium]
+NEW_SPOT_PRIORS = {
+    "fisher":    {"median": 14.0, "sigma": 0.30, "mix": [0.30, 0.40, 0.30]},
+    "kottman":   {"median": 12.5, "sigma": 0.30, "mix": [0.35, 0.40, 0.25]},
+    "mirror":    {"median": 12.0, "sigma": 0.30, "mix": [0.40, 0.40, 0.20]},
+    "medcenter": {"median": 13.0, "sigma": 0.30, "mix": [0.35, 0.45, 0.20]},
+    "lane":      {"median": 12.0, "sigma": 0.40, "mix": [0.50, 0.35, 0.15]},
+    "rpac":      {"median": 12.0, "sigma": 0.30, "mix": [0.35, 0.40, 0.25]},
+    "schott":    {"median": 13.0, "sigma": 0.30, "mix": [0.35, 0.45, 0.20]},
+    "gateway":   {"median": 11.5, "sigma": 0.30, "mix": [0.45, 0.40, 0.15]},
+}
+
+
 def event_key(ev):
     if not isinstance(ev, dict):
         return None
@@ -91,7 +105,8 @@ class CustomerModel:
 
     def profile(self, spot, events):
         """(median, sigma, mix) for a spot given tomorrow's events list."""
-        base = self.p["spots"].get(spot) or {"median": 12.0, "sigma": 0.3, "mix": [0.35, 0.45, 0.20]}
+        base = self.p["spots"].get(spot) or NEW_SPOT_PRIORS.get(spot) or \
+            {"median": 12.0, "sigma": 0.3, "mix": [0.35, 0.45, 0.20]}
         median, sigma, mix = base["median"], base["sigma"], list(base["mix"])
         for ev in events or []:
             key = event_key(ev)
