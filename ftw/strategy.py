@@ -26,10 +26,13 @@ DEFAULT_CFG = {
     "min_price": 2.0,
     "max_price": 24.0,
     "price_offset": 0.0,      # added to grid prices (e.g. -0.01 gives $8.99-style prices)
+    "avoid_spots": [],        # spots never considered
 }
 
 STYLES = {
     "max": {},
+    # camp a home spot and build reputation there (best on held-out local seeds)
+    "camp": {"rep_return": 0.9, "rep_lambda": 2.0, "near_tol_abs": 0.5},
     # Cheapest Eats: low prices, odd cents; the optimizer still picks spot/quality/meals
     "cheap": {"max_price": 9.0, "price_offset": -0.01},
 }
@@ -227,7 +230,10 @@ class Brain:
             return total
 
         # coarse pass
-        combos = [(s, q) for s in rules.spots for q in rules.qualities]
+        avoid = set(cfg.get("avoid_spots") or [])
+        if avoid >= set(rules.spots):
+            avoid = set()
+        combos = [(s, q) for s in rules.spots if s not in avoid for q in rules.qualities]
         thresholds = self._threshold_prices(scen, rules, my_rep)
         for s, q in combos:
             if time.perf_counter() > deadline:

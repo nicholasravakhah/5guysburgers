@@ -29,9 +29,11 @@ def main():
     ap.add_argument("--fresh", action="store_true", help="practice: ignore saved practice memory")
     ap.add_argument("--dry-run", action="store_true", help="live: decide but never send orders")
     ap.add_argument("--quiet", action="store_true")
-    ap.add_argument("--style", choices=sorted(STYLES), default="cheap",
-                    help="cheap: prices capped at $9 with odd cents (default); max: uncapped profit")
+    ap.add_argument("--style", choices=sorted(STYLES), default="camp",
+                    help="camp: build reputation at a home spot (default); max: plain profit; cheap: $9 cap")
+    ap.add_argument("--avoid", default="", help="comma list of spots to never use, e.g. oval")
     args = ap.parse_args()
+    cfg = dict(STYLES[args.style], avoid_spots=[x for x in args.avoid.split(",") if x])
 
     client = Client()
     if not client.has_key:
@@ -47,7 +49,7 @@ def main():
                 sys.exit("could not start practice (%d): %s" % (status, res.get("error")))
             print("practice market %s (seed %s) started" % (res.get("id"), res.get("seed")))
             bot = Bot(client, base=res["base"], memory_path=mem, log_name="practice", quiet=args.quiet,
-                      cfg=STYLES[args.style])
+                      cfg=cfg)
             final = bot.run(stop_when_over=True)
             if not final:
                 continue
@@ -70,7 +72,7 @@ def main():
     print("Cheapest Eats bot (%s style) on %s %s(Ctrl+C to stop)" % (
         args.style, client.url, "[DRY RUN] " if args.dry_run else ""))
     bot = Bot(client, base=API, memory_path=os.path.join(STATE_DIR, "memory_%s.json" % name),
-              log_name=name, dry_run=args.dry_run, quiet=args.quiet, cfg=STYLES[args.style])
+              log_name=name, dry_run=args.dry_run, quiet=args.quiet, cfg=cfg)
     bot.run()
 
 
