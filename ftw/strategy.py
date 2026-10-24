@@ -45,6 +45,11 @@ DEFAULT_CFG = {
     "latenight_price": 9.25,
     "home_rep": 80.0,         # our reputation at a spot that makes it "home"
     "home_day_profit": 250.0, # typical daily profit at home, used to value crowd laws when voting
+    "gameday_profit": 600.0,  # typical game-day profit at the Stadium, for valuing game-day laws
+    "gameday_every": 8.0,     # roughly one game day every N days
+    "riot_cost_day": 40.0,    # $/day we'd pay to remove riot risk (wrecked truck = lost days)
+    "riot_guard": True,       # on a possible riot day keep away from the event spot and its neighbours
+    "riot_radius": 650.0,     # metres around the Stadium treated as the riot zone (Thompson 487 m, Oval 590 m)
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -298,6 +303,8 @@ class Brain:
 
         # coarse pass
         avoid = set(cfg.get("avoid_spots") or [])
+        if cfg.get("riot_guard"):
+            avoid |= riot_zone(state, rules, cfg["riot_radius"])
         if avoid >= set(rules.spots):
             avoid = set()
         quals = [cfg["only_quality"]] if cfg.get("only_quality") in rules.qualities else rules.qualities
@@ -368,6 +375,8 @@ class Brain:
                         "meals": rules.max_meals("premium")}
         if "gameday" not in keys:
             return None
+        if riot_risk(state) and cfg.get("riot_guard"):
+            return None  # possible riot: let the optimizer play a normal day away from the riot zone
         if "standard" not in rules.qualities:
             return None
         exp_c = fc.get("expected_customers") if isinstance(fc.get("expected_customers"), dict) else {}
@@ -440,6 +449,55 @@ def nearest(spot, candidates, pos=LAYOUT):
     return min(known, key=lambda c: (pos[c][0] - a[0]) ** 2 + (pos[c][1] - a[1]) ** 2)
 
 
+def _laws_in_force(state):
+    pol = state.get("politics") if isinstance(state, dict) else None
+    pol = pol if isinstance(pol, dict) else {}
+    laws = list(pol.get("laws") or [])
+    holder = ((pol.get("office") or {}).get("holder") or {}) if isinstance(pol.get("office"), dict) else {}
+    laws += list(holder.get("policies") or [])
+    return [l for l in laws if isinstance(l, dict)]
+
+
+def riot_risk(state):
+    """True when tomorrow's game could end in a riot: riots are live, the game is Michigan or a
+    national championship, and no law in force switches riots off."""
+    if not _features(state).get("riots"):
+        return False
+    fc = state.get("forecast") if isinstance(state.get("forecast"), dict) else {}
+    risky = False
+    for e in fc.get("events") or []:
+        if not isinstance(e, dict) or event_key(e) != "gameday":
+            continue
+        text = " ".join(str(e.get(k, "")) for k in ("name", "effect", "opponent", "title", "detail")).lower()
+        if "michigan" in text or "championship" in text or "title" in text:
+            risky = True
+    if not risky:
+        return False
+    for law in _laws_in_force(state):
+        pr = law.get("params") or {}
+        if "riot" in pr and _f(pr.get("riot"), 1.0) <= 0:
+            return False
+    return True
+
+
+def riot_zone(state, rules, radius):
+    """Spots within radius metres of a possible riot (the game-day event spot)."""
+    if not riot_risk(state):
+        return set()
+    fc = state.get("forecast") or {}
+    centers = [e.get("spot") for e in (fc.get("events") or []) if isinstance(e, dict) and event_key(e) == "gameday"]
+    pos = spot_positions(state)
+    out = set()
+    for c in centers:
+        if c in pos:
+            for s in rules.spots:
+                if s in pos and math.hypot(pos[s][0] - pos[c][0], pos[s][1] - pos[c][1]) <= radius:
+                    out.add(s)
+        elif c:
+            out.add(c)
+    return out
+
+
 def choose_vote(state, cfg=None):
     """Pick the election candidate whose laws help us most: crowd multipliers at our home spot
     (highest reputation) valued at a typical day's profit there, plus the daily fee effect."""
@@ -463,6 +521,12 @@ def choose_vote(state, cfg=None):
             crowd = pr.get("crowd") if isinstance(pr.get("crowd"), dict) else {}
             if home in crowd:
                 score += base * (_f(crowd[home], 1.0) - 1.0)
+            gc = pr.get("game_crowd") if isinstance(pr.get("game_crowd"), dict) else {}
+            if gc:  # game-day crowd law, valued at our game-day spot (the Stadium) per day
+                mult = _f(gc.get("stadium", gc.get("other", 1.0)), 1.0)
+                score += float(cfg["gameday_profit"]) / float(cfg["gameday_every"]) * (mult - 1.0)
+            if "riot" in pr:  # riot 0 removes the risk; >1 makes it worse
+                score -= float(cfg["riot_cost_day"]) * (_f(pr.get("riot"), 1.0) - 1.0)
             if "flat" in pr or "revenue_share" in pr:
                 above = _f(pr.get("above"), 500.0)
                 score += _f(pr.get("flat"), 0.0) + _f(pr.get("revenue_share"), 0.0) * max(0.0, rev - above)
@@ -547,4 +611,4 @@ def _sample_idx(ws, rng):
     return len(ws) - 1
 
 
-__all__ = ["Brain", "DEFAULT_CFG", "event_key", "choose_vote"]
+__all__ = ["Brain", "DEFAULT_CFG", "event_key", "choose_vote", "riot_risk"]
