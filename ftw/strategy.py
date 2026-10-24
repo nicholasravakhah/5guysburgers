@@ -25,6 +25,13 @@ DEFAULT_CFG = {
     "price_step": 0.5,
     "min_price": 2.0,
     "max_price": 24.0,
+    "price_offset": 0.0,      # added to grid prices (e.g. -0.01 gives $8.99-style prices)
+}
+
+STYLES = {
+    "max": {},
+    # Cheapest Eats: low prices, odd cents; the optimizer still picks spot/quality/meals
+    "cheap": {"max_price": 9.0, "price_offset": -0.01},
 }
 
 
@@ -231,7 +238,9 @@ class Brain:
             p = lo
             prices = []
             while p <= hi + 1e-9:
-                prices.append(round(p, 2))
+                po = round(p + cfg["price_offset"], 2)
+                if lo <= po <= hi:
+                    prices.append(po)
                 p += cfg["price_step"]
             prices.extend(tp for tp in thresholds.get((s, q), []) if lo <= tp <= hi)
             for p in sorted(set(prices)):
@@ -245,7 +254,7 @@ class Brain:
             base = order["price"]
             for dp in (-0.4, -0.3, -0.2, -0.1, -0.05, 0.05, 0.1, 0.2, 0.3, 0.4):
                 p = round(base + dp, 2)
-                if rules.price_min <= p <= min(ceil_p, rules.price_max):
+                if rules.price_min <= p <= min(ceil_p, rules.price_max, cfg["max_price"]):
                     evaluate(s, q, p)
         if not best_by_combo:
             return self._fallback(state, rules), {"why": "deadline before any evaluation"}

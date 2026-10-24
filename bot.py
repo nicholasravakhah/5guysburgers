@@ -1,4 +1,4 @@
-"""5 Guys (t_5f2743) Food Truck Wars bot. Python 3.8+, standard library only.
+"""Cheapest Eats (truck t_5f2743, formerly 5 Guys) Food Truck Wars bot. Python 3.8+, standard library only.
 
     python3 bot.py                      # live game, then the final (leave it running)
     python3 bot.py --dry-run            # live state, decide each night, send nothing
@@ -15,6 +15,7 @@ import time
 
 from ftw.api import API, Client
 from ftw.runner import STATE_DIR, Bot, acquire_lock
+from ftw.strategy import STYLES
 
 
 def main():
@@ -28,6 +29,8 @@ def main():
     ap.add_argument("--fresh", action="store_true", help="practice: ignore saved practice memory")
     ap.add_argument("--dry-run", action="store_true", help="live: decide but never send orders")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--style", choices=sorted(STYLES), default="cheap",
+                    help="cheap: prices capped at $9 with odd cents (default); max: uncapped profit")
     args = ap.parse_args()
 
     client = Client()
@@ -43,7 +46,8 @@ def main():
             if status not in (200, 201):
                 sys.exit("could not start practice (%d): %s" % (status, res.get("error")))
             print("practice market %s (seed %s) started" % (res.get("id"), res.get("seed")))
-            bot = Bot(client, base=res["base"], memory_path=mem, log_name="practice", quiet=args.quiet)
+            bot = Bot(client, base=res["base"], memory_path=mem, log_name="practice", quiet=args.quiet,
+                      cfg=STYLES[args.style])
             final = bot.run(stop_when_over=True)
             if not final:
                 continue
@@ -63,9 +67,10 @@ def main():
 
     name = "live_dry" if args.dry_run else "live"
     lock = acquire_lock(name)  # noqa: F841  (held for the life of the process)
-    print("5 Guys bot on %s %s(Ctrl+C to stop)" % (client.url, "[DRY RUN] " if args.dry_run else ""))
+    print("Cheapest Eats bot (%s style) on %s %s(Ctrl+C to stop)" % (
+        args.style, client.url, "[DRY RUN] " if args.dry_run else ""))
     bot = Bot(client, base=API, memory_path=os.path.join(STATE_DIR, "memory_%s.json" % name),
-              log_name=name, dry_run=args.dry_run, quiet=args.quiet)
+              log_name=name, dry_run=args.dry_run, quiet=args.quiet, cfg=STYLES[args.style])
     bot.run()
 
 
