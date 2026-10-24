@@ -187,6 +187,8 @@ class Bot:
             self._report_day(state)
             self._check_foreign_order(state)
             self._maybe_vote(state)
+            self._maybe_staff(state)
+            self._maybe_coupon(state)
             self._maybe_self_update(state)
             if state.get("phase") == "over":
                 self._save()
@@ -222,6 +224,60 @@ class Bot:
                 sys.exit(0)
         except Exception as e:  # never let updating break the bot
             self.say("update check failed: %r" % (e,))
+
+    def _maybe_staff(self, state):
+        """Staff rule: keep a crew big enough for our largest order at a wage rivals can't easily
+        poach; raise the wage if we end up short. Settings are saved on the truck (carry into the final)."""
+        if self.dry_run:
+            return
+        try:
+            feats = state.get("features") or {}
+            you = state.get("you") or {}
+            st = you.get("staff") if isinstance(you.get("staff"), dict) else None
+            if not feats.get("staff") or st is None:
+                return
+            cfg = self.brain.cfg
+            want_n = int(cfg.get("staff_target", 3))
+            want_w = float(cfg.get("staff_wage", 9.0))
+            cur_w = float(st.get("wage") or 0)
+            if (st.get("employees") or 0) < want_n and st.get("target") == want_n and cur_w >= want_w:
+                want_w = min(20.0, cur_w + 2.0)  # short-handed: someone poached us, pay more
+            want_w = max(want_w, cur_w)
+            key = ("staff", state.get("mode"), state.get("market"), want_n, want_w)
+            if key in self.voted or (st.get("target") == want_n and abs(cur_w - want_w) < 0.01):
+                return
+            self.voted.add(key)
+            status, res = self.client.staff(want_n, want_w, base=self.base)
+            self.say("staff -> %d at $%.2f (%s)" % (want_n, want_w, status))
+        except Exception as e:
+            self.say("staff error: %r" % (e,))
+
+    def _maybe_coupon(self, state):
+        """Coupons rule: once per night, $20 coupon on the truck just ahead of us (or the closest chaser if we lead)."""
+        if self.dry_run or not self.brain.cfg.get("coupon_rule"):
+            return
+        try:
+            if not (state.get("features") or {}).get("coupons") or state.get("phase") != "night":
+                return
+            key = ("coupon", state.get("mode"), state.get("market"), state.get("order_for_day"))
+            if key in self.voted:
+                return
+            you = state.get("you") or {}
+            me = you.get("id")
+            others = [t for t in (state.get("trucks") or []) if isinstance(t, dict) and t.get("id") and t.get("id") != me]
+            if not others:
+                return
+            mine = you.get("cash") or 0
+            ahead = [t for t in others if (t.get("cash") or 0) > mine]
+            # race the truck just ahead of us; if we lead, slow the closest chaser
+            lead = min(ahead, key=lambda t: t.get("cash") or 0) if ahead else max(others, key=lambda t: t.get("cash") or 0)
+            if abs((lead.get("cash") or 0) - mine) < float(self.brain.cfg.get("coupon_min_lead", 0.0)):
+                return
+            self.voted.add(key)
+            status, res = self.client.coupon(lead["id"], base=self.base)
+            self.say("coupon on %s (%s)" % (lead.get("truck_name"), status))
+        except Exception as e:
+            self.say("coupon error: %r" % (e,))
 
     def _maybe_vote(self, state):
         """Vote automatically in campus elections for the candidate that helps our home spot most."""
