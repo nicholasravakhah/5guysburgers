@@ -3,10 +3,11 @@
 **Live status, updated every round: [LIVE.md](LIVE.md)**
 
 ## Right now
-- **The bot running on our key:** this Node bot (v3, camping Thompson), from Charlie's laptop.
-  Process log: `live-out.log`.
-- **Only ONE bot on the key.** The last order sent each night wins, so a second bot overwrites
-  ours. Don't start the Python bot.
+- **The team's Python bot owns the key** (since day 5). This Node bot runs in **shadow mode**
+  (`--shadow`) on Charlie's laptop: it decides every night but sends nothing, and
+  [LIVE.md](LIVE.md) scores its choice against the real day, side by side with the Python bot.
+- **Only ONE bot sends orders.** The last order sent each night wins. To hand the key to the
+  Node bot: stop the Python bot, then run `node bot.js --camp thompson` (no `--shadow`).
 - **The live game doesn't decide the winner.** The **8:30 AM final** does: 20 fresh markets of
   30 days, every truck starting from $0 and rep 50, 2 seconds per day, highest average profit
   wins.

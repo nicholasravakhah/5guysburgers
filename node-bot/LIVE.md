@@ -51,6 +51,14 @@ Open spots last day: Thompson (106), Union (98), Stadium (61).
 | 4 | Oval | standard $10.75 | 0/90 | −$337.50 |
 | 5 | North Res | premium $9.25 | 59/66 | $182.75 |
 
+## Head-to-head: Node bot (shadow) vs the bot that played
+The Node bot decides every night without sending. Its order is replayed against that day's **real** crowd and **real** rival offers with the fitted customer model. The "model check" column predicts the played order's sales the same way, to show the estimate's accuracy.
+
+| Day | Played (actual) | Actual profit | Node bot would order | Node est. sold | Node est. profit | Model check (pred vs actual sold) |
+|---|---|---|---|---|---|---|
+| 5 | North Res premium $9.25 × 66 | $182.75 | Thompson standard $10.25 × 59 | 59/59 | **$383.50** | 63 vs 59 |
+| **Total** | | **$182.75** | | | **$383.50** | |
+
 ## Announcements
 - 9:30 PM: Tomorrow: Game day. 100,000 fans: a huge crowd at the Stadium and a busier campus everywhere.
 - 9:30 PM: Day 5: Frontrun Fries made $405 at The Oval.
