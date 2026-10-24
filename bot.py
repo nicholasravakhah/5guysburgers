@@ -35,12 +35,15 @@ def main():
     ap.add_argument("--quality", choices=["cheap", "standard", "premium"], help="only use this quality")
     ap.add_argument("--max-price", type=float, help="never price above this")
     ap.add_argument("--price", type=float, help="fixed price; the bot still picks meals")
+    ap.add_argument("--meals-mult", type=float, help="cook this multiple of the optimal meal count")
     args = ap.parse_args()
     manual = {"avoid_spots": [x for x in args.avoid.split(",") if x], "only_quality": args.quality}
     if args.max_price:
         manual["max_price"] = args.max_price
     if args.price:
         manual["fixed_price"] = args.price
+    if args.meals_mult:
+        manual["meals_mult"] = args.meals_mult
     # manual locks only apply in the live game; the final always runs the full optimizer
     cfg = dict(STYLES[args.style], live_overrides=manual)
 

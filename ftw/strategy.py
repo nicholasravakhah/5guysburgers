@@ -30,6 +30,7 @@ DEFAULT_CFG = {
     "only_quality": None,     # e.g. "premium" to consider one tier only
     "fixed_price": None,      # e.g. 9.24: only this price; the optimizer still picks meals
     "live_overrides": {},     # manual settings applied in mode == "live" only
+    "meals_mult": 1.0,        # scale the optimal meal count (e.g. 1.15 after repeated sellouts)
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -225,6 +226,10 @@ class Brain:
             ds = [sc[spot].demand(qi, price, value, cap) for sc in scen]
             evals += 1
             n, prof, sold = engine.best_quantity(ds, price, rules.costs[q], cap)
+            if n > 0 and cfg.get("meals_mult", 1.0) != 1.0:
+                n = max(0, min(cap, int(round(n * cfg["meals_mult"]))))
+                sold = sum(min(n, d) for d in ds) / len(ds)
+                prof = price * sold - rules.costs[q] * n
             if n > 0 and cfg["shared_meal_frac"] < 1.0 and exp_rivals.get(spot, 0.0) >= 0.5:
                 n = int(n * cfg["shared_meal_frac"])
                 sold = sum(min(n, d) for d in ds) / len(ds)
