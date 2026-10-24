@@ -41,6 +41,10 @@ DEFAULT_CFG = {
     "gameday_rule": True,     # game day: standard, max meals, biggest spot no rival owns (live day 21: +$763)
     "gameday_price": 9.49,
     "stronghold_rep": 70.0,   # a rival with this reputation at a spot owns it
+    "latenight_rule": True,   # late-night rush at our home spot: premium, max meals (live day 23: +$286)
+    "latenight_price": 9.25,
+    "home_rep": 80.0,         # our reputation at a spot that makes it "home"
+    "home_day_profit": 250.0, # typical daily profit at home, used to value crowd laws when voting
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -355,7 +359,14 @@ class Brain:
         """Game day: crowds outgrow every truck. Take the biggest spot that no rival owns
         (reputation >= stronghold_rep) and isn't ours already worth more, with the most standard meals."""
         fc = state.get("forecast") if isinstance(state.get("forecast"), dict) else {}
-        if not any(event_key(e) == "gameday" for e in (fc.get("events") or []) if isinstance(e, dict)):
+        keys = {event_key(e) for e in (fc.get("events") or []) if isinstance(e, dict)}
+        if "latenight" in keys and cfg.get("latenight_rule") and "premium" in rules.qualities:
+            mine = (state.get("you") or {}).get("reputation") or {}
+            home = max(rules.spots, key=lambda s: _f(mine.get(s), 50.0))
+            if home in ("highst", "northres") and _f(mine.get(home), 50.0) >= cfg["home_rep"]:
+                return {"spot": home, "quality": "premium", "price": float(cfg["latenight_price"]),
+                        "meals": rules.max_meals("premium")}
+        if "gameday" not in keys:
             return None
         if "standard" not in rules.qualities:
             return None
@@ -427,6 +438,37 @@ def nearest(spot, candidates, pos=LAYOUT):
     if not known:
         return None
     return min(known, key=lambda c: (pos[c][0] - a[0]) ** 2 + (pos[c][1] - a[1]) ** 2)
+
+
+def choose_vote(state, cfg=None):
+    """Pick the election candidate whose laws help us most: crowd multipliers at our home spot
+    (highest reputation) valued at a typical day's profit there, plus the daily fee effect."""
+    cfg = dict(DEFAULT_CFG, **(cfg or {}))
+    pol = state.get("politics") if isinstance(state, dict) else None
+    el = (pol or {}).get("election") if isinstance(pol, dict) else None
+    cands = (el or {}).get("candidates") if isinstance(el, dict) else None
+    if not cands:
+        return None
+    mine = ((state.get("you") or {}).get("reputation") or {})
+    if not mine:
+        return None
+    home = max(mine, key=lambda s: _f(mine.get(s), 50.0))
+    base = float(cfg["home_day_profit"])
+    rev = base + 300.0  # rough daily revenue at home
+    best, best_score = None, None
+    for c in cands:
+        score = 0.0
+        for pol_ in c.get("policies") or []:
+            pr = pol_.get("params") or {}
+            crowd = pr.get("crowd") if isinstance(pr.get("crowd"), dict) else {}
+            if home in crowd:
+                score += base * (_f(crowd[home], 1.0) - 1.0)
+            if "flat" in pr or "revenue_share" in pr:
+                above = _f(pr.get("above"), 500.0)
+                score += _f(pr.get("flat"), 0.0) + _f(pr.get("revenue_share"), 0.0) * max(0.0, rev - above)
+        if best_score is None or score > best_score:
+            best, best_score = c.get("id"), score
+    return best
 
 
 def _move_costs(state, rules):
@@ -505,4 +547,4 @@ def _sample_idx(ws, rng):
     return len(ws) - 1
 
 
-__all__ = ["Brain", "DEFAULT_CFG", "event_key"]
+__all__ = ["Brain", "DEFAULT_CFG", "event_key", "choose_vote"]
