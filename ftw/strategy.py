@@ -36,6 +36,11 @@ DEFAULT_CFG = {
     "fair_delta": 1.0,        # fair choice: rivals within this value of ours share customers (guess)
     "fair_temp": 0.5,         # fair choice: share weight exp(value / temp) (guess)
     "walk_frac": 0.15,        # walk over: share of hungry customers who walk (live day 16: 10-25%)
+    "premium_guard": 0.5,     # skip cheap/standard at a spot where a better-value premium rival shows up in
+                              # >= this share of scenarios (live day 21: bot wanted standard vs Frontrun/Wagyu premium)
+    "gameday_rule": True,     # game day: standard, max meals, biggest spot no rival owns (live day 21: +$763)
+    "gameday_price": 9.49,
+    "stronghold_rep": 70.0,   # a rival with this reputation at a spot owns it
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -223,6 +228,9 @@ class Brain:
             cfg = dict(cfg, **cfg["live_overrides"])
         you = state.get("you") if isinstance(state.get("you"), dict) else {}
         my_rep = you.get("reputation") if isinstance(you.get("reputation"), dict) else {}
+        gd = self._gameday_order(state, rules, cfg) if cfg.get("gameday_rule") else None
+        if gd:
+            return gd, {"why": "gameday rule"}
         day = state.get("order_for_day") or ((state.get("day") or 0) + 1)
         days = state.get("days") or 30
         remaining = max(0, int(days) - int(day))   # days after this one
@@ -239,10 +247,17 @@ class Brain:
             for s_, p_ in sd.items():
                 exp_rivals[s_] = exp_rivals.get(s_, 0.0) + pa * p_
 
+        guard = cfg.get("premium_guard")
+
         def evaluate(spot, q, price):
             nonlocal evals
             rep = _f(my_rep.get(spot), 50.0)
             value = rules.values[q] * rep_factor(rep) - price
+            if guard is not None and QI[q] < QI["premium"]:
+                hit = sum(1 for sc in scen if any(t.qi == QI["premium"] and t.value >= value
+                                                  for t in sc[spot].rivals))
+                if hit >= guard * len(scen):
+                    return None
             cap = rules.max_meals(q)
             qi = QI[q]
             ds = [sc[spot].demand(qi, price, value, cap, fair) for sc in scen]
@@ -332,6 +347,33 @@ class Brain:
                          for v in ranked[:5]],
                  "rivals": [(r.name or r.tid, round(pa, 2), max(sd, key=sd.get)) for r, pa, sd in rival_pred]}
         return dict(pick[1]), debug
+
+    def _gameday_order(self, state, rules, cfg):
+        """Game day: crowds outgrow every truck. Take the biggest spot that no rival owns
+        (reputation >= stronghold_rep) and isn't ours already worth more, with the most standard meals."""
+        fc = state.get("forecast") if isinstance(state.get("forecast"), dict) else {}
+        if not any(event_key(e) == "gameday" for e in (fc.get("events") or []) if isinstance(e, dict)):
+            return None
+        if "standard" not in rules.qualities:
+            return None
+        exp_c = fc.get("expected_customers") if isinstance(fc.get("expected_customers"), dict) else {}
+        if not exp_c:
+            return None
+        owned = set()
+        for r in self._rival_list(state):
+            for s, v in (r.rep or {}).items():
+                if _f(v, 50.0) >= cfg["stronghold_rep"]:
+                    owned.add(s)
+        free = [s for s in rules.spots if s not in owned and _f(exp_c.get(s), 0) > 0]
+        if not free:
+            return None
+        spot = max(free, key=lambda s: _f(exp_c.get(s), 0))
+        meals = rules.max_meals("standard")
+        if _f(exp_c.get(spot), 0) < 0.8 * meals:
+            return None  # not an overflow day at any free spot: let the optimizer decide
+        price = min(float(cfg["gameday_price"]), rules.values["standard"] * rep_factor(
+            _f(((state.get("you") or {}).get("reputation") or {}).get(spot), 50.0)) - 0.01)
+        return {"spot": spot, "quality": "standard", "price": round(price, 2), "meals": meals}
 
     def _threshold_prices(self, scen, rules, my_rep):
         """Prices that just beat a likely rival's value at a spot (one cent better)."""
