@@ -33,8 +33,11 @@ def main():
                     help="camp: build reputation at a home spot (default); max: plain profit; cheap: $9 cap")
     ap.add_argument("--avoid", default="", help="comma list of spots to never use, e.g. oval")
     ap.add_argument("--quality", choices=["cheap", "standard", "premium"], help="only use this quality")
+    ap.add_argument("--max-price", type=float, help="never price above this")
     args = ap.parse_args()
     cfg = dict(STYLES[args.style], avoid_spots=[x for x in args.avoid.split(",") if x], only_quality=args.quality)
+    if args.max_price:
+        cfg["max_price"] = args.max_price
 
     client = Client()
     if not client.has_key:
