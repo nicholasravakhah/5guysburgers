@@ -31,6 +31,10 @@ DEFAULT_CFG = {
     "fixed_price": None,      # e.g. 9.24: only this price; the optimizer still picks meals
     "live_overrides": {},     # manual settings applied in mode == "live" only
     "meals_mult": 1.0,        # scale the optimal meal count (e.g. 1.15 after repeated sellouts)
+    # optional server rules (state.features); exact rules for fair choice / walk over are not published
+    "salvage_frac": 0.25,     # salvage: unsold meals refund 25% of food cost (documented)
+    "fair_delta": 1.0,        # fair choice: rivals within this value of ours share customers (guess)
+    "fair_temp": 0.5,         # fair choice: share weight exp(value / temp) (guess)
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -175,6 +179,8 @@ class Brain:
         rivals = self._rival_list(state)
         rival_pred = [(r, r.p_active(), r.spot_dist(rules.spots, ctx)) for r in rivals]
         profiles = {s: self.model.profile(s, events) for s in rules.spots}
+        walk_over = bool(_features(state).get("walk_over"))
+        pos = spot_positions(state)
         maxm = {q: rules.max_meals(q) for q in rules.qualities}
         scen = []
         for k in range(K):
@@ -188,11 +194,21 @@ class Brain:
                 spot = _sample(sd, rng)
                 q, p, m = r.sample_order(spot, rng, maxm)
                 at[spot].append(engine.Truck(r.tid, q, p, r.rep.get(spot, 50.0), m, rules.values))
-            per_spot = {}
+            crowds = {}
             for s in rules.spots:
                 n = self.model.crowd(s, _f(exp_c.get(s), 0.0), w, fc, rng)
                 med, sig, mix = profiles[s]
-                lim, mq = self.model.customers(n, med, sig, mix, rng)
+                crowds[s] = self.model.customers(n, med, sig, mix, rng)
+            per_spot = {}
+            for s in rules.spots:
+                lim, mq = crowds[s]
+                if walk_over:
+                    # customers at spots with no food walk to the nearest spot that has food
+                    fed = {x for x in rules.spots if at[x]} | {s}
+                    for e in rules.spots:
+                        if e not in fed and nearest(e, fed, pos) == s:
+                            lim = lim + crowds[e][0]
+                            mq = mq + crowds[e][1]
                 per_spot[s] = engine.SpotScenario(lim, mq, at[s])
             scen.append(per_spot)
         return scen, rival_pred
@@ -210,6 +226,9 @@ class Brain:
         scen, rival_pred = self._scenarios(state, rules, cfg["scenarios"], deadline)
         if not scen:
             return self._fallback(state, rules), {"why": "no scenarios"}
+        feats = _features(state)
+        salvage = cfg["salvage_frac"] if feats.get("salvage") else 0.0
+        fair = (cfg["fair_delta"], cfg["fair_temp"]) if feats.get("fair_choice") else None
         best_by_combo = {}
         evals = 0
         exp_rivals = {}
@@ -223,17 +242,20 @@ class Brain:
             value = rules.values[q] * rep_factor(rep) - price
             cap = rules.max_meals(q)
             qi = QI[q]
-            ds = [sc[spot].demand(qi, price, value, cap) for sc in scen]
+            ds = [sc[spot].demand(qi, price, value, cap, fair) for sc in scen]
             evals += 1
-            n, prof, sold = engine.best_quantity(ds, price, rules.costs[q], cap)
+            cost = rules.costs[q]
+            n, prof, sold = engine.best_quantity(ds, price, cost, cap, salvage)
+
+            def at_n(n):
+                sold = sum(min(n, d) for d in ds) / len(ds)
+                return sold, price * sold - cost * n + salvage * cost * (n - sold)
             if n > 0 and cfg.get("meals_mult", 1.0) != 1.0:
                 n = max(0, min(cap, int(round(n * cfg["meals_mult"]))))
-                sold = sum(min(n, d) for d in ds) / len(ds)
-                prof = price * sold - rules.costs[q] * n
+                sold, prof = at_n(n)
             if n > 0 and cfg["shared_meal_frac"] < 1.0 and exp_rivals.get(spot, 0.0) >= 0.5:
                 n = int(n * cfg["shared_meal_frac"])
-                sold = sum(min(n, d) for d in ds) / len(ds)
-                prof = price * sold - rules.costs[q] * n
+                sold, prof = at_n(n)
             bonus = 0.0
             if n > 0 and remaining > 0 and cfg["rep_lambda"]:
                 new_rep = max(0.0, min(100.0, rep + REP_DELTA[q]))
@@ -325,6 +347,43 @@ class Brain:
                 p = math.floor((a - v - 0.01) * 100) / 100.0
                 out.setdefault((s, q), []).append(p)
         return out
+
+
+# campus map coordinates (x, z) from the TV's campus-map.js; new spots come from state.spot_info
+LAYOUT = {"oval": (100, 70), "thompson": (-12, 140), "union": (440, 388), "stadium": (-490, 48),
+          "highst": (463, -186), "northres": (170, -478)}
+
+
+def spot_positions(state):
+    pos = dict(LAYOUT)
+    si = state.get("spot_info") if isinstance(state, dict) else None
+    items = si.items() if isinstance(si, dict) else (
+        [((o or {}).get("key") or (o or {}).get("spot") or (o or {}).get("id"), o) for o in si]
+        if isinstance(si, list) else [])
+    for k, o in items:
+        if not k or not isinstance(o, dict):
+            continue
+        xy = o.get("pos") or o.get("position") or [o.get("x"), o.get("z")]
+        try:
+            pos[k] = (float(xy[0]), float(xy[1]))
+        except (TypeError, ValueError, IndexError):
+            pass
+    return pos
+
+
+def nearest(spot, candidates, pos=LAYOUT):
+    a = pos.get(spot)
+    if a is None:
+        return None  # unknown position: assume nobody walks
+    known = [c for c in candidates if c in pos]
+    if not known:
+        return None
+    return min(known, key=lambda c: (pos[c][0] - a[0]) ** 2 + (pos[c][1] - a[1]) ** 2)
+
+
+def _features(state):
+    f = state.get("features") if isinstance(state, dict) else None
+    return f if isinstance(f, dict) else {}
 
 
 def _track_rep(r, order, spots):

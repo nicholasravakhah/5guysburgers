@@ -12,6 +12,7 @@ Key facts used for speed:
 So for each scenario and rank j we precompute free customers' limits sorted by
 minimum-quality class, and D(quality, price) is a few binary searches.
 """
+import math
 from bisect import bisect_left
 
 from .rules import QI, rep_factor
@@ -33,9 +34,13 @@ def rank_key(value, price):
     return (-round(value, 9), round(price, 9))
 
 
-def simulate_spot(limits, minq, trucks, rng=None):
+def simulate_spot(limits, minq, trucks, rng=None, fair=None):
     """Full sequential simulation. Returns {tid: sold}. Used by the local market
-    simulator and tests; trucks with identical (value, price) are randomized."""
+    simulator and tests; trucks with identical (value, price) are randomized.
+    fair=(delta, temp): customers pick among eligible trucks within delta of the best
+    eligible value, weighted by exp(value/temp) (our guess at "fair choice")."""
+    if fair and rng is not None:
+        return _simulate_fair(limits, minq, trucks, rng, fair)
     live = [t for t in trucks if t.value >= 0 and t.stock > 0]
     if rng is not None:
         rng.shuffle(live)
@@ -54,6 +59,31 @@ def simulate_spot(limits, minq, trucks, rng=None):
     for t, s in zip(live, sold):
         out[t.tid] = s
     return out
+
+
+def _simulate_fair(limits, minq, trucks, rng, fair):
+    delta, temp = fair
+    live = [t for t in trucks if t.value >= 0 and t.stock > 0]
+    stock = {t.tid: t.stock for t in live}
+    sold = {t.tid: 0 for t in trucks}
+    for L, mq in zip(limits, minq):
+        ok = [t for t in live if stock[t.tid] > 0 and t.price <= L and t.qi >= mq]
+        if not ok:
+            continue
+        best = max(t.value for t in ok)
+        band = [t for t in ok if t.value >= best - delta]
+        ws = [math.exp(t.value / temp) for t in band]
+        r = rng.random() * sum(ws)
+        acc = 0.0
+        pick = band[-1]
+        for t, w in zip(band, ws):
+            acc += w
+            if r <= acc:
+                pick = t
+                break
+        stock[pick.tid] -= 1
+        sold[pick.tid] += 1
+    return sold
 
 
 class SpotScenario:
@@ -91,10 +121,27 @@ class SpotScenario:
         self._free[j] = buckets
         return buckets
 
-    def demand(self, qi, price, value, cap):
-        """Our sales with `cap` meals at (quality index, price, value)."""
+    def demand(self, qi, price, value, cap, fair=None):
+        """Our sales with `cap` meals at (quality index, price, value).
+
+        fair=(delta, temp) approximates the "fair choice" rule: rivals whose value is
+        within delta of ours share customers with us by weight exp(value/temp). We mix
+        the outcomes with those rivals ranked above us and below us by our share."""
         if value < 0:
             return 0
+        if fair:
+            delta, temp = fair
+            above = [t for t in self.rivals if t.value > value + delta]
+            band = [t for t in self.rivals if abs(t.value - value) <= delta]
+            if band:
+                j_lo = len(above)
+                j_hi = j_lo + len(band)
+                w_us = math.exp(value / temp)
+                share = w_us / (w_us + sum(math.exp(t.value / temp) for t in band))
+                d_lo = self._count(j_lo, qi, price)
+                d_hi = self._count(j_hi, qi, price)
+                d = int(round(share * d_lo + (1 - share) * d_hi))
+                return d if d < cap else cap
         key = rank_key(value, price)
         j = 0
         for t in self.rivals:
@@ -102,18 +149,26 @@ class SpotScenario:
                 j += 1
             else:
                 break
+        d = self._count(j, qi, price)
+        return d if d < cap else cap
+
+    def _count(self, j, qi, price):
         buckets = self.free_sorted(j)
         d = 0
         for c in range(qi + 1):
             b = buckets[c]
             d += len(b) - bisect_left(b, price)
-        return d if d < cap else cap
+        return d
 
 
-def best_quantity(demands, price, cost, cap):
+def best_quantity(demands, price, cost, cap, salvage=0.0):
     """Given sampled demands D_k (already capped), pick n maximizing
-    price * E[min(n, D)] - cost * n. Returns (n, expected_profit, expected_sold).
+    price * E[min(n, D)] - cost * n + salvage * cost * E[n - min(n, D)].
+    Returns (n, expected_profit, expected_sold). With salvage s this is the plain
+    problem at price - s*cost and cost (1-s)*cost, so the same search applies.
     The objective is concave piecewise-linear in n, so the optimum is at a sample."""
+    if salvage:
+        price, cost = price - salvage * cost, (1.0 - salvage) * cost
     K = len(demands)
     if K == 0 or price <= cost:
         return 0, 0.0, 0.0

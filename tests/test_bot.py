@@ -126,6 +126,33 @@ class BrainTests(unittest.TestCase):
         o = Brain(seed=3, cfg=cfg).decide(fin)
         self.assertNotEqual(o["price"], 3.33)
 
+    def test_features_and_new_spot(self):
+        from ftw.strategy import nearest, LAYOUT
+        self.assertEqual(nearest("highst", {"northres", "oval", "union"}), "northres")
+        self.assertEqual(nearest("stadium", {"thompson", "oval"}), "thompson")
+        for feats in ({"salvage": True}, {"fair_choice": True}, {"walk_over": True},
+                      {"salvage": True, "fair_choice": True, "walk_over": True}, "garbage"):
+            st = sample_state()
+            st["features"] = feats
+            o = Brain(seed=3).decide(st)
+            self.assertEqual(o, Rules(st["rules"]).validate(o))
+        st = sample_state()  # a spot opens overnight
+        st["rules"] = dict(st["rules"], spots=st["rules"]["spots"] + ["rpac"])
+        st["forecast"]["expected_customers"]["rpac"] = 400
+        st["spot_info"] = {"rpac": {"x": 0, "z": 0}}
+        st["features"] = {"walk_over": True}
+        o = Brain(seed=3).decide(st)
+        self.assertEqual(o["spot"], "rpac")  # a huge empty new spot is taken
+        self.assertEqual(o, Rules(st["rules"]).validate(o))
+
+    def test_salvage_quantity(self):
+        ds = [20, 40, 60, 80]
+        n0 = engine.best_quantity(ds, 9.0, 5.5, 90)[0]
+        n1 = engine.best_quantity(ds, 9.0, 5.5, 90, salvage=0.25)[0]
+        self.assertGreaterEqual(n1, n0)
+        n, prof, sold = engine.best_quantity([50], 9.0, 5.5, 90, salvage=0.25)
+        self.assertAlmostEqual(prof, 9.0 * 50 - 5.5 * 50)
+
     def test_deadline_fallback(self):
         b = Brain(seed=3)
         o = b.decide(sample_state(), deadline=0.0)
