@@ -47,6 +47,18 @@ def _order(st, rng, spot):
     return {"spot": spot, "price": price, "quality": q, "meals": CAP[q]}
 
 
+def get_state(c, base):
+    for attempt in range(6):
+        try:
+            s, st = c.state(base=base, timeout=20)
+            if s == 200:
+                return st
+        except NetError as e:
+            print("net", e, flush=True)
+        time.sleep(2 + 3 * attempt)
+    return {}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--markets", type=int, default=10)
@@ -61,13 +73,18 @@ def main():
     for m in range(args.markets):
         seed = "%s-%d" % (args.prefix, m)
         rng = random.Random(seed)
-        s, r = c.practice(seed=seed, days=args.days, rivals=args.rivals)
+        try:
+            s, r = c.practice(seed=seed, days=args.days, rivals=args.rivals)
+        except NetError as e:
+            print("net", e, flush=True)
+            time.sleep(10)
+            continue
         if s not in (200, 201):
             print("practice failed", s, r.get("error"), flush=True)
             time.sleep(10)
             continue
         base = r["base"]
-        s, st = c.state(base=base)
+        st = get_state(c, base)
         while st.get("phase") == "night":
             order = choose(st, rng, [x for x in args.spots.split(",") if x])
             prev_fc = st.get("forecast")
@@ -78,12 +95,12 @@ def main():
             except NetError as e:
                 print("net", e, flush=True)
                 time.sleep(3)
-                s, st = c.state(base=base)
+                st = get_state(c, base)
                 continue
             if s != 200:
                 print("order", s, res.get("error"), flush=True)
                 time.sleep(3)
-                s, st = c.state(base=base)
+                st = get_state(c, base)
                 continue
             st = res["state"]
             rec = {"seed": seed, "rivals": args.rivals, "forecast": prev_fc, "rep_before": prev_rep,

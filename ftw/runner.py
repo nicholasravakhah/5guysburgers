@@ -107,6 +107,8 @@ class Bot:
         self.log_path = os.path.join(LOG_DIR, log_name + ".jsonl")
         self.ordered = set()
         self.reported = set()
+        self.sent = {}
+        self.foreign = set()
         self.stats = {"orders": 0, "rejected": 0, "net_errors": 0, "decide_ms": []}
 
     # ---- persistence of per-market progress so restarts do not double-count days
@@ -181,6 +183,7 @@ class Bot:
             version = v if isinstance(v, int) else version
             self.brain.observe(state)
             self._report_day(state)
+            self._check_foreign_order(state)
             if state.get("phase") == "over":
                 self._save()
                 self.writer.flush()
@@ -243,6 +246,7 @@ class Bot:
             break
         if status == 200:
             self.ordered.add(key)
+            self.sent[key] = dict(order)
             self.stats["orders"] += 1
             dbg = self.brain.last_debug
             self.say("  ordered %s day %s: %s %s $%.2f x%d  (exp $%s, %.0f ms)" % (
@@ -253,6 +257,20 @@ class Bot:
             nxt = res.get("state") if isinstance(res, dict) else None
             return nxt if isinstance(nxt, dict) else None
         return None
+
+    def _check_foreign_order(self, state):
+        """Warn (never fight) if someone else replaced our order with the same key."""
+        key = (state.get("mode"), state.get("market"), state.get("order_for_day"))
+        mine = self.sent.get(key)
+        cur = (state.get("you") or {}).get("order")
+        if not mine or not isinstance(cur, dict):
+            return
+        same = all(cur.get(k) == mine.get(k) for k in ("spot", "quality", "meals")) and \
+            abs(float(cur.get("price") or 0) - mine["price"]) < 0.005
+        if not same and key not in self.foreign:
+            self.foreign.add(key)
+            self.say("  !!! WARNING: our order for %s was replaced by another client: %s (we sent %s). "
+                     "Only ONE machine should run the live bot." % (key, cur, mine))
 
     def _log_decision(self, state, order, res, ms):
         self.writer.log(self.log_path, {
