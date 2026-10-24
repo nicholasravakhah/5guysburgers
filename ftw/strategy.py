@@ -15,7 +15,7 @@ from .opponents import Rival, day_context
 from .rules import QI, REP_DELTA, Rules, rep_factor
 
 DEFAULT_CFG = {
-    "scenarios": 48,
+    "scenarios": 150,
     "deadline": 0.45,         # seconds of compute before using the best order found so far
     "rep_lambda": 1.0,        # $ per reputation point per remaining-day weight
     "rep_horizon": 10.0,      # days over which reputation pays back
