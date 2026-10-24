@@ -35,6 +35,7 @@ DEFAULT_CFG = {
     "salvage_frac": 0.25,     # salvage: unsold meals refund 25% of food cost (documented)
     "fair_delta": 1.0,        # fair choice: rivals within this value of ours share customers (guess)
     "fair_temp": 0.5,         # fair choice: share weight exp(value / temp) (guess)
+    "walk_frac": 0.15,        # walk over: share of hungry customers who walk (live day 16: 10-25%)
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -207,8 +208,10 @@ class Brain:
                     fed = {x for x in rules.spots if at[x]} | {s}
                     for e in rules.spots:
                         if e not in fed and nearest(e, fed, pos) == s:
-                            lim = lim + crowds[e][0]
-                            mq = mq + crowds[e][1]
+                            wl, wq = crowds[e]
+                            k = int(len(wl) * self.cfg["walk_frac"])
+                            lim = lim + wl[:k]
+                            mq = mq + wq[:k]
                 per_spot[s] = engine.SpotScenario(lim, mq, at[s])
             scen.append(per_spot)
         return scen, rival_pred
