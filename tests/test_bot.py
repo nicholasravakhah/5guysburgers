@@ -114,6 +114,18 @@ class BrainTests(unittest.TestCase):
         o = b.decide(st)
         self.assertEqual(o, Rules(None).validate(o))
 
+    def test_live_overrides_do_not_reach_final(self):
+        cfg = {"live_overrides": {"avoid_spots": ["oval", "thompson", "union", "stadium", "highst"],
+                                  "only_quality": "cheap", "fixed_price": 3.33}}
+        live = sample_state()
+        live["mode"] = "live"
+        o = Brain(seed=3, cfg=cfg).decide(live)
+        self.assertEqual((o["spot"], o["quality"], o["price"]), ("northres", "cheap", 3.33))
+        fin = sample_state()
+        fin["mode"] = "final"
+        o = Brain(seed=3, cfg=cfg).decide(fin)
+        self.assertNotEqual(o["price"], 3.33)
+
     def test_deadline_fallback(self):
         b = Brain(seed=3)
         o = b.decide(sample_state(), deadline=0.0)
@@ -227,7 +239,8 @@ class RunnerTests(unittest.TestCase):
         bot.brain.observe(st)
         bot._save()
         bot.writer.flush()
-        mem = json.load(open(live))
+        with open(live) as f:
+            mem = json.load(f)
         self.assertTrue(any(r["tid"] == "h1" for r in mem["rivals"]))
         self.assertEqual(mem["market"]["processed"], [1])
         self.assertFalse(os.path.exists(prac))

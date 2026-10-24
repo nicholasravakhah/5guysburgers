@@ -29,6 +29,7 @@ DEFAULT_CFG = {
     "avoid_spots": [],        # spots never considered
     "only_quality": None,     # e.g. "premium" to consider one tier only
     "fixed_price": None,      # e.g. 9.24: only this price; the optimizer still picks meals
+    "live_overrides": {},     # manual settings applied in mode == "live" only
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -197,6 +198,9 @@ class Brain:
 
     def _optimize(self, state, rules, deadline):
         cfg = self.cfg
+        if state.get("mode") == "live" and cfg.get("live_overrides"):
+            # manual live-game settings (spot/quality/price locks) never reach the final or practice
+            cfg = dict(cfg, **cfg["live_overrides"])
         you = state.get("you") if isinstance(state.get("you"), dict) else {}
         my_rep = you.get("reputation") if isinstance(you.get("reputation"), dict) else {}
         day = state.get("order_for_day") or ((state.get("day") or 0) + 1)

@@ -36,11 +36,13 @@ def main():
     ap.add_argument("--max-price", type=float, help="never price above this")
     ap.add_argument("--price", type=float, help="fixed price; the bot still picks meals")
     args = ap.parse_args()
-    cfg = dict(STYLES[args.style], avoid_spots=[x for x in args.avoid.split(",") if x], only_quality=args.quality)
+    manual = {"avoid_spots": [x for x in args.avoid.split(",") if x], "only_quality": args.quality}
     if args.max_price:
-        cfg["max_price"] = args.max_price
+        manual["max_price"] = args.max_price
     if args.price:
-        cfg["fixed_price"] = args.price
+        manual["fixed_price"] = args.price
+    # manual locks only apply in the live game; the final always runs the full optimizer
+    cfg = dict(STYLES[args.style], live_overrides=manual)
 
     client = Client()
     if not client.has_key:
