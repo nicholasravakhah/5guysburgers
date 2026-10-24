@@ -248,6 +248,7 @@ class Brain:
                 exp_rivals[s_] = exp_rivals.get(s_, 0.0) + pa * p_
 
         guard = cfg.get("premium_guard")
+        move_cost = _move_costs(state, rules)
 
         def evaluate(spot, q, price):
             nonlocal evals
@@ -281,6 +282,8 @@ class Brain:
                 weight = min(remaining, cfg["rep_horizon"]) / cfg["rep_horizon"]
                 bonus = cfg["rep_lambda"] * (new_rep - rep) * weight * cfg["rep_return"] * p_sell * \
                     rules.values[q] / 12.0
+            if n > 0:
+                prof -= move_cost.get(spot, 0.0)  # moving costs: $2 + $0.01/m to leave the last spot sold at
             total = prof + bonus
             key = (spot, q)
             cur = best_by_combo.get(key)
@@ -424,6 +427,35 @@ def nearest(spot, candidates, pos=LAYOUT):
     if not known:
         return None
     return min(known, key=lambda c: (pos[c][0] - a[0]) ** 2 + (pos[c][1] - a[1]) ** 2)
+
+
+def _move_costs(state, rules):
+    """{spot: cost to park there tomorrow} while moving costs are live: base + per_metre * distance
+    from the spot we last sold at (documented: $2 plus $0.01 a metre). Empty when off or unknown."""
+    if not _features(state).get("moving_costs"):
+        return {}
+    you = state.get("you") if isinstance(state.get("you"), dict) else {}
+    last = you.get("last_spot")
+    pos = spot_positions(state)
+    if not last or last not in pos:
+        return {}
+    base, per_m = 2.0, 0.01
+    mc = (state.get("rules") or {}).get("move_costs")
+    if isinstance(mc, dict):
+        for k, v in mc.items():
+            k = str(k).lower()
+            if "per" in k or "metre" in k or "meter" in k:
+                per_m = _f(v, per_m)
+            elif "base" in k or "fixed" in k or "flat" in k:
+                base = _f(v, base)
+    a = pos[last]
+    out = {}
+    for s in rules.spots:
+        if s == last or s not in pos:
+            continue
+        d = math.hypot(pos[s][0] - a[0], pos[s][1] - a[1])
+        out[s] = base + per_m * d
+    return out
 
 
 def _features(state):
