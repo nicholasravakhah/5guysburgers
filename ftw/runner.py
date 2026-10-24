@@ -263,6 +263,15 @@ class Bot:
             if key in self.voted:
                 return
             you = state.get("you") or {}
+            # coupon_doubling: each drop costs 2x our last one ($20, $40, $80...) - only buy cheap ones
+            rc = ((state.get("rules") or {}).get("coupons") or {})
+            cost = you.get("coupon_cost", rc.get("cost", 20))
+            try:
+                cost = float(cost)
+            except (TypeError, ValueError):
+                cost = 20.0
+            if cost > float(self.brain.cfg.get("coupon_max_cost", 20.0)):
+                return
             me = you.get("id")
             others = [t for t in (state.get("trucks") or []) if isinstance(t, dict) and t.get("id") and t.get("id") != me]
             if not others:
