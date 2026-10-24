@@ -1,16 +1,11 @@
 # LIVE: Cheapest Eats (auto-updated every round)
 
-**live game, day 5 of 48**, phase **night** until 9:45 PM ET. Our cash **−$422.50**, rank **5 of 7**. Bot: `strategy v3 camp thompson`.
+**live game, day 5 of 48**, phase **night** until 9:45 PM ET. Our cash **−$422.50**, rank **5 of 7**. Bot: `strategy v3 camp thompson SHADOW (not sending orders)`.
 
 ## Next order
 On the server for day 6: **North Res, standard, $9.05, 90 meals**
 
-> [!WARNING]
-> **Two bots are on our key.** The Node bot sent Union standard $11.25 × 105, but the server holds a different order (above), so another bot sent after it and won. Run only ONE bot.
-
 Node bot's reasoning: `plan: union standard $11.25 x105 (exp sold 88, exp profit $592)`
-
-Last sent: `ordered for day 6: {"spot":"union","price":11.25,"quality":"standard","meals":105}`
 
 ## Forecast for day 6
 Weather: clear 52%, cloudy 31%, rain 13%, cold 4%. Events: **Game day** (Stadium).
