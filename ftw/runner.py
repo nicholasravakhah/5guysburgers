@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -186,6 +187,7 @@ class Bot:
             self._report_day(state)
             self._check_foreign_order(state)
             self._maybe_vote(state)
+            self._maybe_self_update(state)
             if state.get("phase") == "over":
                 self._save()
                 self.writer.flush()
@@ -193,6 +195,33 @@ class Bot:
                     return state
             nxt = self._maybe_order(state)
             state = nxt  # practice returns the next state with the order; otherwise poll
+
+    def _maybe_self_update(self, state):
+        """Live game only: every few minutes during the day phase (our order is locked), check GitHub
+        for newer code; if found, flush and exit so run.sh pulls it and restarts the bot.
+        Never runs in the final or in practice, so the final plays on settled code."""
+        if self.dry_run or state.get("mode") != "live" or state.get("phase") != "day":
+            return
+        if os.environ.get("NS_NO_SELF_UPDATE"):
+            return
+        now = time.time()
+        if now - getattr(self, "_last_update_check", 0.0) < 240:
+            return
+        self._last_update_check = now
+        try:
+            def git(*a):
+                return subprocess.run(["git"] + list(a), cwd=ROOT, capture_output=True, text=True, timeout=20)
+            if git("fetch", "-q", "origin").returncode != 0:
+                return
+            head = git("rev-parse", "HEAD").stdout.strip()
+            remote = git("rev-parse", "@{u}").stdout.strip()
+            if head and remote and head != remote and git("merge-base", "--is-ancestor", head, remote).returncode == 0:
+                self.say("new code on GitHub (%s -> %s): restarting to pick it up" % (head[:7], remote[:7]))
+                self._save()
+                self.writer.flush()
+                sys.exit(0)
+        except Exception as e:  # never let updating break the bot
+            self.say("update check failed: %r" % (e,))
 
     def _maybe_vote(self, state):
         """Vote automatically in campus elections for the candidate that helps our home spot most."""
