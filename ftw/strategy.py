@@ -28,6 +28,7 @@ DEFAULT_CFG = {
     "price_offset": 0.0,      # added to grid prices (e.g. -0.01 gives $8.99-style prices)
     "avoid_spots": [],        # spots never considered
     "only_quality": None,     # e.g. "premium" to consider one tier only
+    "fixed_price": None,      # e.g. 9.24: only this price; the optimizer still picks meals
     "shared_meal_frac": 1.0,  # <1 cooks less than the optimum when rivals are expected (Arjun's idea; off)
 }
 
@@ -260,11 +261,13 @@ class Brain:
                     prices.append(po)
                 p += cfg["price_step"]
             prices.extend(tp for tp in thresholds.get((s, q), []) if lo <= tp <= hi)
+            if cfg.get("fixed_price"):
+                prices = [round(float(cfg["fixed_price"]), 2)]
             for p in sorted(set(prices)):
                 evaluate(s, q, p)
         # refine around the best few combos
         ranked = sorted(best_by_combo.items(), key=lambda kv: -kv[1][0])
-        for (s, q), (tot, order, _, _) in ranked[:5]:
+        for (s, q), (tot, order, _, _) in ([] if cfg.get("fixed_price") else ranked[:5]):
             if time.perf_counter() > deadline:
                 break
             ceil_p = rules.values[q] * rep_factor(_f(my_rep.get(s), 50.0)) - 0.01
