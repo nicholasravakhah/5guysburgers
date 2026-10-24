@@ -19,7 +19,7 @@ import time
 
 from .api import API, Client, NetError, ROOT
 from .rules import Rules
-from .strategy import Brain
+from .strategy import Brain, choose_vote
 
 STATE_DIR = os.path.join(ROOT, "state")
 LOG_DIR = os.path.join(ROOT, "logs")
@@ -109,6 +109,7 @@ class Bot:
         self.reported = set()
         self.sent = {}
         self.foreign = set()
+        self.voted = set()
         self.stats = {"orders": 0, "rejected": 0, "net_errors": 0, "decide_ms": []}
 
     # ---- persistence of per-market progress so restarts do not double-count days
@@ -184,6 +185,7 @@ class Bot:
             self.brain.observe(state)
             self._report_day(state)
             self._check_foreign_order(state)
+            self._maybe_vote(state)
             if state.get("phase") == "over":
                 self._save()
                 self.writer.flush()
@@ -191,6 +193,31 @@ class Bot:
                     return state
             nxt = self._maybe_order(state)
             state = nxt  # practice returns the next state with the order; otherwise poll
+
+    def _maybe_vote(self, state):
+        """Vote automatically in campus elections for the candidate that helps our home spot most."""
+        if self.dry_run:
+            return
+        try:
+            el = ((state.get("politics") or {}).get("election") or {})
+            if not el.get("candidates"):
+                return
+            pick = choose_vote(state, self.brain.cfg)
+            if not pick:
+                return
+            current = (state.get("you") or {}).get("vote")
+            if isinstance(current, dict):
+                current = current.get("candidate")
+            if current is None:
+                current = (el.get("votes") or {}).get(self.brain.my_id)
+            key = (el.get("id"), pick)
+            if current == pick or key in self.voted:
+                return
+            self.voted.add(key)
+            status, res = self.client.vote(pick, base=self.base)
+            self.say("vote %s in election %s -> %s" % (pick, el.get("id"), status))
+        except Exception as e:  # never let voting break ordering
+            self.say("vote error: %r" % (e,))
 
     def _maybe_order(self, state):
         key = (state.get("mode"), state.get("market"), state.get("order_for_day"))
